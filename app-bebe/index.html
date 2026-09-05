@@ -59,6 +59,14 @@
   }
   .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#12142b;font-weight:600}
   .status{margin-top:18px;text-align:center;font-size:13px;color:var(--dim);min-height:20px}
+  .meter{height:8px;border-radius:99px;background:#12162e;border:1px solid var(--line);overflow:hidden;margin-top:10px}
+  #meterFill{height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .08s linear}
+  .warn{margin-top:12px;padding:10px 12px;border-radius:12px;background:#3a2a12;border:1px solid #7a5a22;color:var(--accent-2);font-size:12.5px;text-align:center;display:none}
+  .warn.on{display:block}
+  details.help{margin-top:14px;font-size:12.5px;color:var(--dim)}
+  details.help summary{cursor:pointer;color:var(--accent);list-style:none;text-align:center;padding:6px}
+  details.help summary::-webkit-details-marker{display:none}
+  details.help ul{margin:10px 0 0;padding-left:18px;line-height:1.7}
   .status b{color:var(--ok);font-variant-numeric:tabular-nums}
   .actions{display:flex;gap:10px;margin-top:18px}
   .btn{
@@ -94,18 +102,30 @@
   <div class="panel">
     <div class="row">
       <label for="vol">Volumen</label>
-      <input id="vol" type="range" min="0" max="100" value="45" aria-label="Volumen">
-      <span id="volTxt" style="width:42px;text-align:right;color:var(--dim);font-size:13px">45%</span>
+      <input id="vol" type="range" min="0" max="100" value="70" aria-label="Volumen">
+      <span id="volTxt" style="width:42px;text-align:right;color:var(--dim);font-size:13px">70%</span>
     </div>
     <div class="row">
       <label>Temporizador</label>
       <div class="chips" id="timerChips"></div>
     </div>
     <div class="status" id="status">Toca un sonido para empezar</div>
+    <div class="meter"><div id="meterFill"></div></div>
+    <div class="warn" id="warn"></div>
     <div class="actions">
       <button class="btn" id="nightBtn">🌑 Modo noche</button>
       <button class="btn stop" id="stopBtn">■ Detener todo</button>
     </div>
+    <details class="help">
+      <summary>¿No se oye nada?</summary>
+      <ul>
+        <li>Si la barra verde de arriba se mueve, la app sí está sonando: sube el volumen del teléfono con los botones laterales <em>mientras suena</em>.</li>
+        <li><b>iPhone:</b> revisa el interruptor de silencio (el switch naranja en el costado). Con el silencio activo, Safari no reproduce audio.</li>
+        <li><b>Android:</b> el volumen de "multimedia" es distinto al del timbre. Ajústalo mientras suena el sonido.</li>
+        <li>Si tienes audífonos o una bocina Bluetooth conectada, el sonido se va para allá.</li>
+        <li>Si la barra no se mueve, toca otra vez el botón del sonido.</li>
+      </ul>
+    </details>
   </div>
 
   <footer>
@@ -133,20 +153,38 @@ const store = {
 };
 
 let ctx = null, master = null, ambientBus = null, melodyBus = null, reverb = null, wetBus = null;
+let limiter = null, analyser = null, meterData = null;
 
 function audio(){
   if (ctx) return ctx;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   master = ctx.createGain();      master.gain.value = 0;   // arranca en silencio y sube suave
   ambientBus = ctx.createGain();  ambientBus.gain.value = 1;
-  melodyBus  = ctx.createGain();  melodyBus.gain.value = 0.55;
+  melodyBus  = ctx.createGain();  melodyBus.gain.value = 0.75;
   wetBus     = ctx.createGain();  wetBus.gain.value = 0.35;
   reverb = ctx.createConvolver(); reverb.buffer = makeReverb(ctx, 2.6);
+  // Limitador: deja subir el volumen sin que el altavoz distorsione en los picos.
+  limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -6; limiter.knee.value = 6; limiter.ratio.value = 12;
+  limiter.attack.value = 0.003; limiter.release.value = 0.25;
+  // Analizador: solo para dibujar la barra de nivel en pantalla.
+  analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+  meterData = new Float32Array(analyser.fftSize);
+
   ambientBus.connect(master);
   melodyBus.connect(master);
   melodyBus.connect(reverb); reverb.connect(wetBus); wetBus.connect(master);
-  master.connect(ctx.destination);
+  master.connect(limiter); limiter.connect(analyser); analyser.connect(ctx.destination);
+
+  // iOS/Safari: un sonido mudo dentro del primer toque "despierta" el audio.
+  try{
+    const b = ctx.createBuffer(1, 1, ctx.sampleRate);
+    const src = ctx.createBufferSource(); src.buffer = b;
+    src.connect(ctx.destination); src.start(0);
+  }catch(e){}
+
   applyVolume(0.8);
+  requestAnimationFrame(meterLoop);
   return ctx;
 }
 
@@ -386,7 +424,7 @@ function stopNodes(){
 
 function setAmbient(id){
   audio();
-  ctx.resume();
+  checkAudioReady();
   const same = state.ambient === id;
   stopNodes();
   state.ambient = same ? null : id;
@@ -403,7 +441,7 @@ function setAmbient(id){
 
 function setSong(id){
   audio();
-  ctx.resume();
+  checkAudioReady();
   const same = state.song === id;
   clearTimeout(state.songTimer);
   state.songTimer = null;
@@ -448,7 +486,7 @@ const volTxt = document.getElementById("volTxt");
 
 function volValue(){                       // curva cuadrática = se siente más natural
   const v = parseInt(volEl.value, 10) / 100;
-  return v * v * 1.1;
+  return v * v * 1.9;
 }
 function applyVolume(seconds){
   if (!ctx) return;
@@ -534,6 +572,32 @@ TIMERS.forEach(m => {
 });
 
 const statusEl = document.getElementById("status");
+const meterFill = document.getElementById("meterFill");
+const warnEl = document.getElementById("warn");
+
+// Dibuja la barra de nivel: mide la señal real que sale hacia el altavoz.
+function meterLoop(){
+  if (analyser){
+    analyser.getFloatTimeDomainData(meterData);
+    let sum = 0;
+    for (let i = 0; i < meterData.length; i++) sum += meterData[i] * meterData[i];
+    const rms = Math.sqrt(sum / meterData.length);
+    meterFill.style.width = Math.min(100, rms * 320).toFixed(1) + "%";
+  }
+  requestAnimationFrame(meterLoop);
+}
+
+// El navegador puede dejar el audio "suspendido"; avisamos en vez de fallar en silencio.
+function checkAudioReady(){
+  if (!ctx) return;
+  const done = () => {
+    const ok = ctx.state === "running";
+    warnEl.textContent = ok ? "" : "El navegador tiene el sonido en pausa. Vuelve a tocar el botón del sonido.";
+    warnEl.classList.toggle("on", !ok);
+  };
+  const r = ctx.resume();
+  if (r && r.then) r.then(done).catch(done); else done();
+}
 const nightEl = document.getElementById("night");
 const nightTime = document.getElementById("nightTime");
 
@@ -585,7 +649,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Preferencias guardadas en el propio teléfono
-volEl.value = store.get("db_vol", 45);
+volEl.value = store.get("db_vol", 70);
 volTxt.textContent = volEl.value + "%";
 const savedTimer = parseInt(store.get("db_timer", "0"), 10);
 state.timerMin = TIMERS.includes(savedTimer) ? savedTimer : 0;
