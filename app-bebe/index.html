@@ -126,6 +126,12 @@
    Todo se sintetiza con la Web Audio API: no hay archivos mp3.
    Cadena: fuente -> filtros -> gainAmbiente/gainMelodia -> master -> altavoz
 -------------------------------------------------------------------*/
+// Preferencias: algunos navegadores (modo privado) bloquean localStorage y lanzan error.
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : v; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, v); }catch(e){} }
+};
+
 let ctx = null, master = null, ambientBus = null, melodyBus = null, reverb = null, wetBus = null;
 
 function audio(){
@@ -453,7 +459,7 @@ function applyVolume(seconds){
 }
 volEl.addEventListener("input", () => {
   volTxt.textContent = volEl.value + "%";
-  localStorage.setItem("db_vol", volEl.value);
+  store.set("db_vol", volEl.value);
   applyVolume(0.15);
 });
 
@@ -462,7 +468,7 @@ function setTimer(min){
   clearInterval(state.timerId);
   state.timerId = null; state.timerEnd = 0; state.fading = false;
   state.timerMin = min;
-  localStorage.setItem("db_timer", min);
+  store.set("db_timer", min);
   applyVolume(0.3);
   syncTimer();
   render();
@@ -579,9 +585,9 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Preferencias guardadas en el propio teléfono
-volEl.value = localStorage.getItem("db_vol") || 45;
+volEl.value = store.get("db_vol", 45);
 volTxt.textContent = volEl.value + "%";
-const savedTimer = parseInt(localStorage.getItem("db_timer") || "0", 10);
+const savedTimer = parseInt(store.get("db_timer", "0"), 10);
 state.timerMin = TIMERS.includes(savedTimer) ? savedTimer : 0;
 render();
 </script>
